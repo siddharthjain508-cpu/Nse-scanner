@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NSE CHoCH Swing Scanner</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#0e1116; --card:#161b22; --line:#262d36; --text:#e6edf3; --muted:#8b949e;
+    --buy:#22c55e; --wait:#f59e0b; --trade:#3b82f6; --bear:#ef4444; --idle:#6b7280;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font:15px/1.45 Inter,system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:720px;margin:0 auto;padding:18px 14px 40px}
+  header h1{font-size:20px;margin:0 0 2px;font-weight:700;letter-spacing:-.01em}
+  header p{margin:0;color:var(--muted);font-size:13px}
+  .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:16px 0 6px}
+  .stat{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:10px 8px;text-align:center}
+  .stat b{display:block;font-size:22px;font-weight:700}
+  .stat span{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+  h2{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:22px 0 8px;display:flex;align-items:center;gap:8px}
+  h2 i{width:8px;height:8px;border-radius:50%;display:inline-block}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px 14px;margin-bottom:8px}
+  .top{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+  .sym{font-weight:700;font-size:16px}
+  .px{font-family:"JetBrains Mono",monospace;font-size:14px}
+  .note{color:var(--muted);font-size:13px;margin-top:2px}
+  .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:10px}
+  .kv{background:#0f141a;border-radius:8px;padding:6px 8px}
+  .kv span{display:block;font-size:10.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+  .kv b{font-family:"JetBrains Mono",monospace;font-size:13px;font-weight:500}
+  .up{color:var(--buy)} .dn{color:var(--bear)}
+  .chip{font-size:11px;font-weight:600;padding:2px 8px;border-radius:999px;border:1px solid currentColor;white-space:nowrap}
+  .bar{height:6px;border-radius:3px;background:#0f141a;margin-top:10px;position:relative;overflow:hidden}
+  .bar div{position:absolute;top:0;bottom:0;border-radius:3px}
+  details{margin-top:24px;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px 14px}
+  summary{cursor:pointer;font-weight:600}
+  details p,details li{color:var(--muted);font-size:13.5px}
+  .empty{color:var(--muted);font-size:13px;padding:4px 2px}
+  .more{width:100%;padding:10px;border-radius:12px;border:1px solid var(--line);background:transparent;color:var(--muted);font:inherit;margin-bottom:8px}
+  footer{color:var(--muted);font-size:12px;margin-top:20px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>CHoCH → EMA Pullback</h1>
+    <p id="meta">Loading…</p>
+  </header>
+  <div class="stats" id="stats"></div>
+  <input id="q" type="search" placeholder="Search any stock (e.g. TATAPOWER)" autocomplete="off"
+    style="width:100%;margin:10px 0 0;padding:11px 14px;border-radius:12px;border:1px solid var(--line);background:var(--card);color:var(--text);font:inherit">
+  <div id="groups"></div>
+
+  <details>
+    <summary>Strategy rules</summary>
+    <ol>
+      <li><b>Weekly CHoCH:</b> the weekly high breaks the last swing high while the structure is bearish (BigBeluga “Choch Pattern Levels”, length 10).</li>
+      <li><b>No entry on the CHoCH.</b> Wait for a pullback: the previous week closed above the 20 or 50 EMA, this week’s low touches it (within 1%) and the week closes back above it.</li>
+      <li><b>Entry</b> at that weekly close. <b>Stop</b> below the support candle’s low. <b>Target</b> 2R, or exit on a bearish CHoCH.</li>
+      <li>The setup is cancelled if price closes below the CHoCH level, a bearish CHoCH comes first, or no pullback happens within 26 weeks.</li>
+    </ol>
+    <p>“History” = how these exact rules did on that stock in the past (closed trades, win rate, average R).</p>
+  </details>
+  <footer id="foot">NSE daily prices via Yahoo Finance, split-adjusted. Scanned every weekday evening; signals are confirmed on the Friday close. Not investment advice.</footer>
+</div>
+
+<script>
+const fmt = (v, d=2) => v==null ? "–" : Number(v).toLocaleString("en-IN",{minimumFractionDigits:d,maximumFractionDigits:d});
+const pct = v => v==null ? "–" : `<span class="${v>=0?'up':'dn'}">${v>0?'+':''}${v.toFixed(1)}%</span>`;
+const dt = s => s ? new Date(s+"T00:00:00").toLocaleDateString("en-IN",{day:"numeric",month:"short",year:"2-digit"}) : "–";
+
+const GROUPS = [
+  {key:"buy",   title:"Buy signals",              color:"var(--buy)",   test:r=>r.status==="ENTRY SIGNAL"},
+  {key:"trade", title:"In trade",                 color:"var(--trade)", test:r=>r.status==="IN TRADE"},
+  {key:"wait",  title:"Awaiting pullback",        color:"var(--wait)",  test:r=>r.status==="AWAITING PULLBACK"},
+  {key:"idle",  title:"Bullish – no active setup", color:"var(--idle)", test:r=>/^(EXITED|INVALIDATED|EXPIRED|CANCELLED)/.test(r.status)},
+  {key:"bear",  title:"Bearish structure",        color:"var(--bear)",  test:r=>r.status==="BEARISH" || r.status==="NO CHOCH"},
+];
+
+function hist(r){
+  return r.hist_trades ? `${r.hist_trades} trades · ${fmt(r.hist_winrate,0)}% win · ${r.hist_avg_r>0?'+':''}${fmt(r.hist_avg_r)}R avg` : "no past trades";
+}
+
+function card(r, g){
+  const c = g.color;
+  let body = "", note = "";
+  if (g.key==="buy" || g.key==="trade"){
+    note = `Support on ${r.ema_used} · signal ${dt(r.signal_date)}`;
+    body = `<div class="grid">
+      <div class="kv"><span>Entry</span><b>${fmt(r.entry)}</b></div>
+      <div class="kv"><span>Stop</span><b class="dn">${fmt(r.stop)}</b></div>
+      <div class="kv"><span>Target</span><b class="up">${fmt(r.target)}</b></div></div>`;
+    if (r.provisional) note += " · provisional (week not closed)";
+    if (g.key==="trade" && r.r_now!=null) note += ` · now ${r.r_now>0?'+':''}${fmt(r.r_now)}R`;
+  } else if (g.key==="wait"){
+    note = `CHoCH ${dt(r.choch_date)} · level ${fmt(r.choch_level)}${r.new_choch?' · <b style="color:var(--wait)">NEW this week</b>':''}`;
+    const near = Math.min(Math.abs(r.vs_ema20??99), Math.abs(r.vs_ema50??99));
+    body = `<div class="grid">
+      <div class="kv"><span>vs EMA20</span><b>${pct(r.vs_ema20)}</b></div>
+      <div class="kv"><span>vs EMA50</span><b>${pct(r.vs_ema50)}</b></div>
+      <div class="kv"><span>EMA20 / 50</span><b>${fmt(r.ema20,0)} / ${fmt(r.ema50,0)}</b></div></div>
+      <div class="bar" title="closeness to EMA"><div style="left:0;width:${Math.max(4,100-near*8)}%;background:${c};opacity:.8"></div></div>`;
+  } else if (g.key==="idle"){
+    const why = {TARGET:"target hit", STOP:"stopped out", "BEARISH CHOCH":"exited on bearish CHoCH"}[r.exit_reason] || r.detail;
+    note = `Last setup: ${r.status.startsWith("EXITED") ? why : r.detail} · CHoCH ${dt(r.choch_date)}`;
+    body = `<div class="grid">
+      <div class="kv"><span>vs EMA20</span><b>${pct(r.vs_ema20)}</b></div>
+      <div class="kv"><span>vs EMA50</span><b>${pct(r.vs_ema50)}</b></div>
+      <div class="kv"><span>Waits for</span><b style="font-size:11.5px">next CHoCH ↑</b></div></div>`;
+  } else {
+    note = r.choch_date ? `Bearish CHoCH ${dt(r.choch_date)} · needs a bullish CHoCH` : "No CHoCH yet";
+    body = `<div class="grid">
+      <div class="kv"><span>vs EMA20</span><b>${pct(r.vs_ema20)}</b></div>
+      <div class="kv"><span>vs EMA50</span><b>${pct(r.vs_ema50)}</b></div>
+      <div class="kv"><span>Swing high</span><b>${fmt(r.choch_level,0)}</b></div></div>`;
+  }
+  return `<div class="card" style="border-left:3px solid ${c}">
+    <div class="top"><a class="sym" href="${tv(r.symbol)}" style="color:var(--text);text-decoration:none">${r.symbol} ↗</a><span class="px">₹${fmt(r.close)}</span></div>
+    <div class="note">${note}</div>${body}
+    <div class="note" style="margin-top:8px;font-size:12px">History: ${hist(r)}</div></div>`;
+}
+
+let DATA = [], LIMIT = {};
+const near = r => Math.min(Math.abs(r.vs_ema20 ?? 99), Math.abs(r.vs_ema50 ?? 99));
+const tv = s => `https://www.tradingview.com/chart/?symbol=NSE:${encodeURIComponent(s)}`;
+
+function render(){
+  const q = (document.getElementById("q").value || "").trim().toUpperCase();
+  const rows = q ? DATA.filter(r => r.symbol.includes(q)) : DATA;
+  document.getElementById("groups").innerHTML = GROUPS.map(g => {
+    let list = rows.filter(g.test);
+    list.sort((a,b) => g.key==="wait" ? near(a)-near(b) : a.symbol.localeCompare(b.symbol));
+    if (!list.length && (g.key==="trade" || q)) return "";
+    // without a search, the two big passive groups only show a count
+    const passive = !q && (g.key==="idle" || g.key==="bear");
+    const lim = LIMIT[g.key] || (g.key==="wait" ? 30 : 50);
+    let html = `<h2><i style="background:${g.color}"></i>${g.title} (${list.length})</h2>`;
+    if (passive) return html + `<div class="empty">Use search to look up a stock in this group.</div>`;
+    if (!list.length) return html + `<div class="empty">None right now.</div>`;
+    html += list.slice(0, lim).map(r => card(r,g)).join("");
+    if (list.length > lim) html += `<button data-g="${g.key}" class="more">Show more (${list.length-lim})</button>`;
+    return html;
+  }).join("");
+  document.querySelectorAll(".more").forEach(b => b.onclick = () => { LIMIT[b.dataset.g] = (LIMIT[b.dataset.g] || 30) + 50; render(); });
+}
+
+async function main(){
+  let data;
+  try { data = await (await fetch("results.json", {cache:"no-store"})).json(); }
+  catch(e){ document.getElementById("meta").textContent = "No scan results yet - the first scan runs after market close."; return; }
+  DATA = data.results || [];
+  document.getElementById("meta").textContent =
+    `Week ending ${dt(data.data_week)} · scanned ${data.scanned_at} · ${DATA.length} liquid NSE stocks`;
+  const counts = GROUPS.map(g => DATA.filter(g.test).length);
+  document.getElementById("stats").innerHTML = [
+    ["Buy", counts[0], "var(--buy)"], ["In trade", counts[1], "var(--trade)"],
+    ["Waiting", counts[2], "var(--wait)"], ["Bearish", counts[4], "var(--bear)"]
+  ].map(([l,n,c]) => `<div class="stat"><b style="color:${c}">${n}</b><span>${l}</span></div>`).join("");
+  if (data.filters) document.getElementById("foot").insertAdjacentText("afterbegin",
+    `Universe ${data.universe} NSE symbols; skipped ${data.skipped_illiquid} below ₹${data.filters.min_price} or ₹${data.filters.min_turnover_cr} cr/day traded value. `);
+  document.getElementById("q").addEventListener("input", render);
+  render();
+}
+main();
+</script>
+</body>
+</html>
